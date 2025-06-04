@@ -1,16 +1,21 @@
-// UrlScreen.dart
+import 'dart:ui' as ui;
+import 'dart:typed_data';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:qr_flutter/qr_flutter.dart';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'dart:io' show Platform, File;
 import 'dart:html' as html;
+
+import 'Urltab.dart';
+import 'Vcard.dart';
+import 'Texttab.dart';
+import 'Mecard.dart';
 
 class UrlScreen extends StatefulWidget {
   const UrlScreen({super.key});
@@ -19,31 +24,48 @@ class UrlScreen extends StatefulWidget {
   State<UrlScreen> createState() => _UrlScreenState();
 }
 
-class _UrlScreenState extends State<UrlScreen> {
-  String selectedOption = 'Color Gradient';
-  Color startColor = const Color(0xFFC29930);
-  Color endColor = const Color(0xFFA4AF30);
-  Color singleColor = Colors.black;
-  Color backgroundColor = Colors.white;
-  final TextEditingController urlController = TextEditingController();
-  String urlText = '';
+class _UrlScreenState extends State<UrlScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  int selectedIndex = 0;
+  bool isGradientSelected = true;
+
+  Color foregroundColor1 = const Color(0xFF021945);
+  Color foregroundColor2 = const Color(0xFFFFAC1C);
+  Color backgroundColor = const Color(0xFFFFFFFF);
+
+  final List<String> tabLabels = ['URL', 'VCARD', 'TEXT', 'MECARD'];
   final GlobalKey qrKey = GlobalKey();
+  String urlText = '';
+  final TextEditingController urlController = TextEditingController();
   bool _isLoading = false;
 
-  void _pickColor(Color currentColor, ValueChanged<Color> onColorChanged) {
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging) {
+        setState(() {
+          selectedIndex = _tabController.index;
+        });
+      }
+    });
+  }
+
+  void pickColor(Color currentColor, Function(Color) onColorChanged) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Pick a color'),
-        content: SingleChildScrollView(
-          child: ColorPicker(
-            pickerColor: currentColor,
-            onColorChanged: onColorChanged,
-          ),
+        content: ColorPicker(
+          pickerColor: currentColor,
+          onColorChanged: onColorChanged,
+          showLabel: true,
+          pickerAreaHeightPercent: 0.8,
         ),
         actions: [
-          ElevatedButton(
-            child: const Text('Done'),
+          TextButton(
+            child: const Text('SELECT'),
             onPressed: () => Navigator.of(context).pop(),
           ),
         ],
@@ -51,65 +73,30 @@ class _UrlScreenState extends State<UrlScreen> {
     );
   }
 
-  Widget _buildColorBox(Color color, void Function() onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 60,
-        height: 40,
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.orange),
-        ),
-      ),
-    );
-  }
+  Future<void> _captureAndSavePng() async {
+    try {
+      RenderRepaintBoundary boundary = qrKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      Uint8List pngBytes = byteData!.buffer.asUint8List();
 
-  Widget _buildColorInput(Color color, ValueChanged<Color> onPickColor) {
-    final TextEditingController hexController = TextEditingController(
-      text: '#${color.value.toRadixString(16).padLeft(8, '0').toUpperCase()}',
-    );
+      if (await Permission.storage.request().isGranted) {
+        final directory = await getExternalStorageDirectory();
+        final path = '${directory!.path}/qr_code_${DateTime.now().millisecondsSinceEpoch}.png';
+        final file = File(path);
+        await file.writeAsBytes(pngBytes);
 
-    return SizedBox(
-      width: 300,
-      child: Row(
-        children: [
-          _buildColorBox(color, () {
-            _pickColor(color, (newColor) {
-              onPickColor(newColor);
-              setState(() {
-                hexController.text =
-                '#${newColor.value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
-              });
-            });
-          }),
-          const SizedBox(width: 10),
-          Expanded(
-            child: TextFormField(
-              controller: hexController,
-              readOnly: true,
-              style: const TextStyle(color: Colors.grey),
-              decoration: InputDecoration(
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFFD97904)),
-                ),
-                enabledBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Color(0xFFD97904)),
-                ),
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Color(0xFFD97904), width: 2),
-                ),
-                isDense: true,
-                contentPadding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("QR code saved at $path")),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Storage permission denied")),
+        );
+      }
+    } catch (e) {
+      print("Error saving QR code: $e");
+    }
   }
 
   Future<void> _downloadQRCode() async {
@@ -159,255 +146,277 @@ class _UrlScreenState extends State<UrlScreen> {
     }
   }
 
-  Widget _buildLeftContent() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Enter Content',
-            style: TextStyle(
-                fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey)),
-        const SizedBox(height: 8),
-        const Text('Your URL',
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey)),
-        const SizedBox(height: 6),
-        SizedBox(
-          width: 300,
-          child: TextField(
-            controller: urlController,
-            decoration: InputDecoration(
-              hintText: 'Enter your URL here...',
-              hintStyle: const TextStyle(color: Colors.grey),
-              suffixIcon: IconButton(
-                icon: const Icon(Icons.refresh, color: Color(0xFFD97904)),
-                onPressed: () {
-                  setState(() {
-                    urlController.clear();
-                    urlText = '';
-                  });
-                },
-              ),
-              enabledBorder: const OutlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFFD97904)),
-                borderRadius: BorderRadius.all(Radius.circular(10)),
-              ),
-              focusedBorder: const OutlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFFD97904), width: 2),
-                borderRadius: BorderRadius.all(Radius.circular(10)),
-              ),
-              contentPadding:
-              const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
-            ),
-          ),
-        ),
-        const SizedBox(height: 20),
-        const Text('Set Colors',
-            style: TextStyle(
-                fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey)),
-        const SizedBox(height: 10),
-        const Text('Foreground Color',
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey)),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 20,
-          runSpacing: 10,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Radio<String>(
-                  value: 'Single Color',
-                  groupValue: selectedOption,
-                  onChanged: (value) => setState(() => selectedOption = value!),
-                ),
-                const Text('Single Color', style: TextStyle(color: Colors.grey)),
-              ],
-            ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Radio<String>(
-                  value: 'Color Gradient',
-                  groupValue: selectedOption,
-                  onChanged: (value) => setState(() => selectedOption = value!),
-                ),
-                const Text('Color Gradient',
-                    style: TextStyle(color: Colors.grey)),
-              ],
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        if (selectedOption == 'Single Color')
-          _buildColorInput(
-              singleColor, (color) => setState(() => singleColor = color))
-        else ...[
-          _buildColorInput(
-              startColor, (color) => setState(() => startColor = color)),
-          const SizedBox(height: 8),
-          _buildColorInput(
-              endColor, (color) => setState(() => endColor = color)),
-        ],
-        const SizedBox(height: 20),
-        const Text('Background Color',
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w500, color: Colors.grey)),
-        const SizedBox(height: 6),
-        _buildColorInput(backgroundColor,
-                (color) => setState(() => backgroundColor = color)),
-      ],
-    );
-  }
 
-  Widget _buildRightContent() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        RepaintBoundary(
-          key: qrKey,
-          child: Container(
-            color: backgroundColor,
-            padding: const EdgeInsets.all(10),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                _isLoading
-                    ? const SizedBox(
-                  width: 200,
-                  height: 200,
-                  child: Center(child: CircularProgressIndicator()),
-                )
-                    : selectedOption == 'Single Color'
-                    ? QrImageView(
-                  data: urlText.isNotEmpty
-                      ? urlText
-                      : "https://example.com",
-                  version: QrVersions.auto,
-                  size: 200,
-                  dataModuleStyle: QrDataModuleStyle(
-                    dataModuleShape: QrDataModuleShape.square,
-                    color: singleColor,
-                  ),
-                  eyeStyle: const QrEyeStyle(
-                    eyeShape: QrEyeShape.square,
-                    color: Colors.black,
-                  ),
-                )
-                    : ShaderMask(
-                  shaderCallback: (bounds) => LinearGradient(
-                    colors: [startColor, endColor],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ).createShader(bounds),
-                  blendMode: BlendMode.srcIn,
-                  child: QrImageView(
-                    data: urlText.isNotEmpty
-                        ? urlText
-                        : "https://example.com",
-                    version: QrVersions.auto,
-                    size: 200,
-                    dataModuleStyle: const QrDataModuleStyle(
-                      dataModuleShape: QrDataModuleShape.square,
-                      color: Colors.white,
-                    ),
-                    eyeStyle: const QrEyeStyle(
-                      eyeShape: QrEyeShape.square,
-                      color: Colors.black,
-                    ),
-                  ),
-                ),
-                if (!_isLoading)
-                  Container(
-                    width: 50,
-                    height: 50,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: backgroundColor,
-                      image: const DecorationImage(
-                        image: AssetImage('images/m logo.png'),
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 30),
-        Wrap(
-          spacing: 20,
-          runSpacing: 12,
-          children: [
-            ElevatedButton(
-              onPressed: () async {
-                final input = urlController.text.trim();
-                if (input.isEmpty) return;
-
-                setState(() => _isLoading = true);
-                await Future.delayed(const Duration(milliseconds: 500));
-
-                Uri? parsedUri;
-                try {
-                  parsedUri = Uri.parse(input);
-                } catch (_) {}
-
-                setState(() {
-                  urlText = parsedUri != null &&
-                      parsedUri.hasScheme &&
-                      parsedUri.hasAuthority
-                      ? parsedUri.toString()
-                      : input;
-                  _isLoading = false;
-                });
-              },
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFD97904)),
-              child: const Text("Create QR Code",
-                  style: TextStyle(color: Colors.white)),
-            ),
-            ElevatedButton(
-              onPressed: _downloadQRCode,
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFD97904)),
-              child: const Text("Download PNG",
-                  style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      ],
-    );
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            bool isMobile = constraints.maxWidth < 600;
-            return SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: isMobile
-                  ? Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
+    return Container(
+      color: const Color.fromARGB(80, 255, 192, 203),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          /// LEFT PANEL
+          Expanded(
+            flex: 2,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: List.generate(tabLabels.length, (i) {
+                      return Row(
+                        children: [
+                          GradientTabButton(
+                            isSelected: selectedIndex == i,
+                            onTap: () {
+                              _tabController.animateTo(i);
+                              setState(() => selectedIndex = i);
+                            },
+                            label: tabLabels[i],
+                          ),
+                          if (i < tabLabels.length - 1) const SizedBox(width: 10),
+                        ],
+                      );
+                    }),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text('Enter content', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF757575))),
+                const SizedBox(height: 8),
+                Builder(
+                  builder: (_) {
+                    switch (selectedIndex) {
+                      case 0: return const Urltab();
+                      case 1: return const Vcard();
+                      case 2: return const Texttab();
+                      case 3: return const Mecard();
+                      default: return const SizedBox.shrink();
+                    }
+                  },
+                ),
+                const SizedBox(height: 24),
+                const Text('Set Colors', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF757575))),
+                const SizedBox(height: 8),
+                const Text('Foreground Color', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF757575))),
+                Row(
+                  children: [
+                    Radio<bool>(value: false, groupValue: isGradientSelected, onChanged: (val) => setState(() => isGradientSelected = false)),
+                    const Text("Single Color"),
+                    const SizedBox(width: 10),
+                    Radio<bool>(value: true, groupValue: isGradientSelected, onChanged: (val) => setState(() => isGradientSelected = true)),
+                    const Text("Color Gradient"),
+                  ],
+                ),
+                colorPickerRow(foregroundColor1, (color) => setState(() => foregroundColor1 = color)),
+                const SizedBox(height: 15),
+                if (isGradientSelected)
+                  colorPickerRow(foregroundColor2, (color) => setState(() => foregroundColor2 = color)),
+                const SizedBox(height: 20),
+                const Text('Background Color', style: TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF757575))),
+                colorPickerRow(backgroundColor, (color) => setState(() => backgroundColor = color)),
+              ],
+            ),
+          ),
+
+          const SizedBox(width: 10),
+
+          /// RIGHT PANEL
+          Expanded(
+            flex: 1,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 60.0, right: 70),
+              child: Column(
                 children: [
-                  _buildLeftContent(),
-                  const SizedBox(height: 40),
-                  Center(child: _buildRightContent()),
-                ],
-              )
-                  : Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 2, child: _buildLeftContent()),
-                  const SizedBox(width: 40),
-                  Expanded(flex: 3, child: _buildRightContent()),
+                  RepaintBoundary(
+                    key: qrKey,
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      color: Colors.transparent,
+                      child: Container(
+                        width: 320,
+                        height: 250,
+                        color: backgroundColor,
+                        alignment: Alignment.center,
+                        child: buildQrWithLogo(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFFFAC1C),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () async {
+                          final input = urlController.text.trim();
+                          if (input.isEmpty) return;
+
+                          setState(() => _isLoading = true);
+                          await Future.delayed(const Duration(milliseconds: 500));
+
+                          Uri? parsedUri;
+                          try {
+                            parsedUri = Uri.parse(input);
+                          } catch (_) {}
+
+                          setState(() {
+                            urlText = parsedUri != null &&
+                                parsedUri.hasScheme &&
+                                parsedUri.hasAuthority
+                                ? parsedUri.toString()
+                                : input;
+                            _isLoading = false;
+                          });
+                        },
+                        child: const Text("Create"),
+                      ),
+                      const SizedBox(width: 16),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFFFAC1C),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _downloadQRCode,
+                        child: const Text("Download"),
+                      ),
+                    ],
+                  ),
                 ],
               ),
-            );
-          },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// ✅ QR CODE WITH CENTER CIRCULAR LOGO
+  Widget buildQrWithLogo() {
+    final qrData = urlText.isEmpty ? 'https://example.com' : urlText;
+
+    final qrCode = QrImageView(
+      data: qrData,
+      size: 300,
+      backgroundColor: Colors.transparent,
+      eyeStyle: QrEyeStyle(
+        eyeShape: QrEyeShape.square,
+        color: isGradientSelected ? Colors.white : foregroundColor1,
+      ),
+      dataModuleStyle: QrDataModuleStyle(
+        dataModuleShape: QrDataModuleShape.square,
+        color: isGradientSelected ? Colors.white : foregroundColor1,
+      ),
+      embeddedImage: AssetImage('images/m logo.png'), // Optional: your logo asset
+      embeddedImageStyle: QrEmbeddedImageStyle(
+        size: const Size(60, 60),
+      ),
+    );
+
+    if (!isGradientSelected) {
+      return qrCode;
+    }
+
+    return ShaderMask(
+      shaderCallback: (bounds) {
+        return LinearGradient(
+          colors: [foregroundColor1, foregroundColor2],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ).createShader(Rect.fromLTWH(0, 0, bounds.width, bounds.height));
+      },
+      blendMode: BlendMode.srcIn,
+      child: qrCode,
+    );
+  }
+
+
+
+  Widget colorPickerRow(Color color, Function(Color) onColorChanged) {
+    final hexValue = "#${color.value.toRadixString(16).padLeft(8, '0').toUpperCase()}";
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Row(
+        children: [
+          GestureDetector(
+            onTap: () => pickColor(color, onColorChanged),
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: color,
+                border: Border.all(color: Colors.orange),
+                borderRadius: BorderRadius.circular(5),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Container(
+              height: 40,
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.orange),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text(hexValue, style: const TextStyle(fontFamily: 'Roboto', fontSize: 16, fontWeight: FontWeight.w500)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class GradientTabButton extends StatelessWidget {
+  final bool isSelected;
+  final VoidCallback onTap;
+  final String label;
+
+  const GradientTabButton({
+    super.key,
+    required this.isSelected,
+    required this.onTap,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        width: 90,
+        height: 32,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          gradient: isSelected
+              ? const LinearGradient(
+            colors: [Color(0xFF021945), Color(0xFFFFAC1C)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          )
+              : null,
+          borderRadius: BorderRadius.circular(25),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : const Color(0xFF021945),
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            fontFamily: 'Roboto',
+          ),
         ),
       ),
     );
